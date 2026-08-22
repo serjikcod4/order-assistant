@@ -1,12 +1,27 @@
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from erp_stub.app import app
 
 
-TOKEN = "local-erp-stub-token"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
+TEST_ERP_STUB_TOKEN = "test-owned-erp-stub-token"
+CONFLICTING_AMBIENT_TOKEN = "ambient-value-that-must-not-win"
+AUTH = {"Authorization": f"Bearer {TEST_ERP_STUB_TOKEN}"}
+
+
+@pytest.fixture
+def conflicting_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ERP_STUB_TOKEN", CONFLICTING_AMBIENT_TOKEN)
+
+
+@pytest.fixture(autouse=True)
+def isolate_erp_stub_token(
+    monkeypatch: pytest.MonkeyPatch,
+    conflicting_ambient_token: None,
+) -> None:
+    monkeypatch.setenv("ERP_STUB_TOKEN", TEST_ERP_STUB_TOKEN)
 
 
 def headers(key: str) -> dict[str, str]:
@@ -78,6 +93,13 @@ def test_stub_requires_bearer_and_supports_controlled_modes() -> None:
         assert client.post(
             "/api/v1/orders",
             headers=unauthenticated,
+            json=payload(),
+        ).status_code == 401
+        wrong_bearer = headers("wrong-bearer")
+        wrong_bearer["Authorization"] = "Bearer wrong-test-value"
+        assert client.post(
+            "/api/v1/orders",
+            headers=wrong_bearer,
             json=payload(),
         ).status_code == 401
         for mode, expected in [
