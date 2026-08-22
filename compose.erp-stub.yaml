@@ -1,0 +1,44 @@
+services:
+  erp-stub:
+    image: order-assistant-erp-stub:local
+    build:
+      context: .
+      dockerfile: erp_stub/Dockerfile
+    environment:
+      ERP_STUB_TOKEN: ${ERP_STUB_TOKEN:?Set ERP_STUB_TOKEN}
+      ERP_STUB_MODE: SUCCESS
+      ERP_STUB_TIMEOUT_SECONDS: "2"
+    ports:
+      - "${ERP_STUB_PORT:-18080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  api:
+    environment:
+      ORDER_ASSISTANT_ERP_BACKEND: http
+      ORDER_ASSISTANT_ERP_BASE_URL: http://erp-stub:8080
+      ORDER_ASSISTANT_ERP_TOKEN: ${ERP_STUB_TOKEN:?Set ERP_STUB_TOKEN}
+      ORDER_ASSISTANT_ERP_CONTRACT_VERSION: v1
+      ORDER_ASSISTANT_ERP_CONNECT_TIMEOUT_SECONDS: "3"
+      ORDER_ASSISTANT_ERP_READ_TIMEOUT_SECONDS: "1"
+      ORDER_ASSISTANT_ERP_WRITE_TIMEOUT_SECONDS: "5"
+      ORDER_ASSISTANT_ERP_POOL_TIMEOUT_SECONDS: "3"
+      ORDER_ASSISTANT_ERP_ALLOW_INSECURE_HTTP: "true"
+      ORDER_ASSISTANT_EXTRACTOR_BACKEND: disabled
+      ORDER_ASSISTANT_LLM_ROLLOUT_MODE: disabled
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      erp-stub:
+        condition: service_healthy

@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-24.04
+    env:
+      ORDER_ASSISTANT_PERSISTENCE_BACKEND: memory
+      ORDER_ASSISTANT_EXTRACTOR_BACKEND: disabled
+      ORDER_ASSISTANT_LLM_ROLLOUT_MODE: disabled
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.14.7"
+          cache: pip
+      - run: python -m pip install --requirement requirements-dev.txt
+      - run: python -m pip check
+      - run: python -m pytest -q
+
+  postgres-migrations:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: order_assistant_ci
+          POSTGRES_USER: order_assistant_ci
+          POSTGRES_PASSWORD: ci-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U order_assistant_ci -d order_assistant_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ORDER_ASSISTANT_DATABASE_URL: postgresql+psycopg://order_assistant_ci:ci-test-password@127.0.0.1:5432/order_assistant_ci
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.14.7"
+          cache: pip
+      - run: python -m pip install --requirement requirements.txt
+      - run: python -m pip check
+      - run: alembic upgrade head
+      - run: alembic current | grep "0004_http_erp_metadata (head)"
+      - run: alembic downgrade base
+      - run: alembic upgrade head
+      - run: alembic current | grep "0004_http_erp_metadata (head)"
+
+  docker-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: docker/setup-buildx-action@v3.11.1
+      - run: docker build --tag order-assistant:ci .
+      - run: docker image inspect order-assistant:ci --format '{{.Config.User}} {{json .Config.Cmd}}'
+      - name: Smoke image with disabled backend
+        run: |
+          docker run --detach --rm --name order-assistant-ci -p 18000:8000 \
+            -e ORDER_ASSISTANT_EXTRACTOR_BACKEND=disabled \
+            -e ORDER_ASSISTANT_LLM_ROLLOUT_MODE=disabled \
+            order-assistant:ci
+          trap 'docker stop order-assistant-ci' EXIT
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:18000/health/live && break
+            sleep 1
+          done
+          curl --fail http://127.0.0.1:18000/health/live
+
+  compose-smoke:
+    runs-on: ubuntu-24.04
+    env:
+      POSTGRES_DB: order_assistant_ci
+      POSTGRES_USER: order_assistant_ci
+      POSTGRES_PASSWORD: ci-compose-password
+      ORDER_ASSISTANT_AUDIT_HMAC_KEY: ci-only-random-looking-key-0000000000000000
+      ORDER_ASSISTANT_API_PORT: "18001"
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: docker/setup-buildx-action@v3.11.1
+      - name: Validate and start disabled stack
+        run: |
+          trap 'docker compose down' EXIT
+          docker compose config --quiet
+          docker compose up --build --detach --wait
+          curl --fail http://127.0.0.1:18001/health/live
+          curl --fail http://127.0.0.1:18001/health/ready
+          docker compose run --rm migrate alembic current | grep "0004_http_erp_metadata (head)"
+
+  erp-contract-tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: order_assistant_erp_ci
+          POSTGRES_USER: order_assistant_erp_ci
+          POSTGRES_PASSWORD: erp-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U order_assistant_erp_ci -d order_assistant_erp_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ORDER_ASSISTANT_ENVIRONMENT: production
+      ORDER_ASSISTANT_PERSISTENCE_BACKEND: sqlalchemy
+      ORDER_ASSISTANT_DATABASE_URL: postgresql+psycopg://order_assistant_erp_ci:erp-ci-password@127.0.0.1:5432/order_assistant_erp_ci
+      ORDER_ASSISTANT_AUDIT_HMAC_KEY: erp-ci-only-random-looking-key-000000000000
+      ORDER_ASSISTANT_EXTRACTOR_BACKEND: disabled
+      ORDER_ASSISTANT_LLM_ROLLOUT_MODE: disabled
+      ORDER_ASSISTANT_ERP_BACKEND: http
+      ORDER_ASSISTANT_ERP_BASE_URL: http://127.0.0.1:18080
+      ORDER_ASSISTANT_ERP_TOKEN: erp-contract-ci-token
+      ORDER_ASSISTANT_ERP_ALLOW_INSECURE_HTTP: "true"
+      ORDER_ASSISTANT_ERP_READ_TIMEOUT_SECONDS: "0.2"
+      ERP_STUB_TOKEN: erp-contract-ci-token
+      ERP_STUB_TIMEOUT_SECONDS: "0.5"
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.14.7"
+          cache: pip
+      - run: python -m pip install --requirement requirements-dev.txt
+      - run: python -m pip check
+      - run: python -m pytest -q tests/infrastructure/test_http_erp.py tests/infrastructure/test_http_erp_loopback.py tests/infrastructure/test_erp_stub.py
+      - run: alembic upgrade head
+      - run: alembic current | grep "0004_http_erp_metadata (head)"
+      - name: Approved HTTP ERP flow, duplicate prevention, and reconciliation
+        run: |
+          python -m uvicorn erp_stub.app:app --host 127.0.0.1 --port 18080 &
+          stub_pid=$!
+          python -m uvicorn order_assistant.api.app:app --host 127.0.0.1 --port 18002 &
+          api_pid=$!
+          trap 'kill $api_pid $stub_pid' EXIT
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:18080/health && \
+              curl --fail --silent http://127.0.0.1:18002/health/live && break
+            sleep 1
+          done
+          python - <<'PY'
+          import json
+          from urllib.request import Request, urlopen
+
+          API = "http://127.0.0.1:18002/api/v1"
+          STUB = "http://127.0.0.1:18080"
+          TOKEN = "erp-contract-ci-token"
+          MANAGER = {"X-Demo-Actor-Id": "manager", "X-Demo-Actor-Role": "manager"}
+          OPERATOR = {"X-Demo-Actor-Id": "operator", "X-Demo-Actor-Role": "operator"}
+
+          def call(url, method="GET", body=None, headers=None):
+              data = json.dumps(body).encode() if body is not None else None
+              request = Request(url, data=data, method=method, headers=headers or {})
+              if data is not None:
+                  request.add_header("Content-Type", "application/json")
+              with urlopen(request, timeout=5) as response:
+                  return json.load(response)
+
+          structured = {
+              "model": "6204", "quantity": 500, "primary_brand": "SKF",
+              "fallback_brands": ["FAG"], "max_unit_price": "250",
+              "delivery_deadline": "2026-08-17T09:00:00"
+          }
+
+          def approved():
+              result = call(f"{API}/order-requests", "POST", structured)
+              return call(f"{API}/drafts/{result['draft_id']}/approve", "POST", headers=MANAGER)
+
+          first_draft = approved()
+          first = call(f"{API}/drafts/{first_draft['draft_id']}/submit", "POST", {}, OPERATOR)
+          duplicate = call(f"{API}/drafts/{first_draft['draft_id']}/submit", "POST", {}, OPERATOR)
+          stats = call(f"{STUB}/__test/stats", headers={"Authorization": f"Bearer {TOKEN}"})
+          assert first["status"] == "succeeded"
+          assert duplicate["created_order_id"] == first["created_order_id"]
+          assert stats["actual_creation_count"] == 1
+
+          call(f"{STUB}/__test/mode", "POST", {"mode": "TIMEOUT_AFTER_CREATION"}, {"Authorization": f"Bearer {TOKEN}"})
+          second_draft = approved()
+          unknown = call(f"{API}/drafts/{second_draft['draft_id']}/submit", "POST", {}, OPERATOR)
+          assert unknown["status"] == "unknown"
+          call(f"{STUB}/__test/mode", "POST", {"mode": "SUCCESS"}, {"Authorization": f"Bearer {TOKEN}"})
+          reconciled = call(f"{API}/submissions/{unknown['submission_id']}/reconcile", "POST", headers=OPERATOR)
+          stats = call(f"{STUB}/__test/stats", headers={"Authorization": f"Bearer {TOKEN}"})
+          assert reconciled["status"] == "succeeded"
+          assert stats["actual_creation_count"] == 2
+          PY

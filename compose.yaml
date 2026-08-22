@@ -1,0 +1,79 @@
+name: order-assistant
+
+# Development defaults such as database name/user are not production
+# credentials. POSTGRES_PASSWORD and AUDIT_HMAC_KEY must be supplied outside
+# this file, for example through a private .env copied from .env.docker.example.
+
+x-application-image: &application-image
+  image: order-assistant:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-application-environment: &application-environment
+  ORDER_ASSISTANT_ENVIRONMENT: production
+  ORDER_ASSISTANT_IDENTITY_PROVIDER: demo_headers
+  ORDER_ASSISTANT_PERSISTENCE_BACKEND: sqlalchemy
+  ORDER_ASSISTANT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-order_assistant}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-order_assistant}
+  ORDER_ASSISTANT_EXTRACTOR_BACKEND: disabled
+  ORDER_ASSISTANT_LLM_ROLLOUT_MODE: disabled
+  ORDER_ASSISTANT_AUDIT_HMAC_KEY: ${ORDER_ASSISTANT_AUDIT_HMAC_KEY:?Set a random 32+ character ORDER_ASSISTANT_AUDIT_HMAC_KEY}
+  ORDER_ASSISTANT_LLM_MAX_CONCURRENCY: ${ORDER_ASSISTANT_LLM_MAX_CONCURRENCY:-1}
+  ORDER_ASSISTANT_LLM_QUEUE_CAPACITY: ${ORDER_ASSISTANT_LLM_QUEUE_CAPACITY:-4}
+  ORDER_ASSISTANT_LLM_QUEUE_WAIT_TIMEOUT_SECONDS: ${ORDER_ASSISTANT_LLM_QUEUE_WAIT_TIMEOUT_SECONDS:-5}
+  ORDER_ASSISTANT_LLM_CIRCUIT_FAILURE_THRESHOLD: ${ORDER_ASSISTANT_LLM_CIRCUIT_FAILURE_THRESHOLD:-3}
+  ORDER_ASSISTANT_LLM_CIRCUIT_OPEN_SECONDS: ${ORDER_ASSISTANT_LLM_CIRCUIT_OPEN_SECONDS:-30}
+  ORDER_ASSISTANT_LLM_CIRCUIT_HALF_OPEN_MAX_CALLS: ${ORDER_ASSISTANT_LLM_CIRCUIT_HALF_OPEN_MAX_CALLS:-1}
+  ORDER_ASSISTANT_LLM_TRANSPORT_MAX_ATTEMPTS: ${ORDER_ASSISTANT_LLM_TRANSPORT_MAX_ATTEMPTS:-1}
+  ORDER_ASSISTANT_READINESS_CACHE_SECONDS: ${ORDER_ASSISTANT_READINESS_CACHE_SECONDS:-5}
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-order_assistant}
+      POSTGRES_USER: ${POSTGRES_USER:-order_assistant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    <<: *application-image
+    command: ["alembic", "upgrade", "head"]
+    environment: *application-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *application-image
+    environment: *application-environment
+    ports:
+      - "${ORDER_ASSISTANT_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

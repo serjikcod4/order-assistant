@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+!.env.docker.example
+.venv/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.db
+*.sqlite*
+eval_reports/
+*.log
+
+# Early standalone HTTP/auth lessons are not part of the portfolio application.
+# They remain local for course history and must be reviewed separately.
+auth_client.py
+auth_server.py
+lesson_01.py
+lesson_02.py
+lesson_03.py
+lesson_04.py
+lesson_06.py

@@ -1,0 +1,12 @@
+services:
+  api:
+    environment:
+      ORDER_ASSISTANT_EXTRACTOR_BACKEND: ollama
+      ORDER_ASSISTANT_LLM_ROLLOUT_MODE: shadow
+      ORDER_ASSISTANT_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      ORDER_ASSISTANT_OLLAMA_MODEL: qwen3.5:9b
+      ORDER_ASSISTANT_OLLAMA_PROMPT_VERSION: v2
+      ORDER_ASSISTANT_OLLAMA_THINK: "false"
+      ORDER_ASSISTANT_AUDIT_HMAC_KEY: ${ORDER_ASSISTANT_AUDIT_HMAC_KEY:?Set a real random audit HMAC key}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

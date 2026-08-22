@@ -1,0 +1,114 @@
+openapi: 3.1.0
+info:
+  title: Order Assistant ERP Contract
+  version: v1
+paths:
+  /health:
+    get:
+      operationId: erpHealth
+      responses:
+        "200":
+          description: ERP stub/service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: ok}
+  /api/v1/orders:
+    post:
+      operationId: createOrder
+      security: [{bearerAuth: []}]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateOrderRequest"}
+      responses:
+        "200":
+          description: Existing idempotent order
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OrderResponse"}
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OrderResponse"}
+        "400": {description: Invalid request}
+        "401": {description: Invalid bearer token}
+        "403": {description: Forbidden}
+        "409": {description: Idempotency key conflicts with another payload}
+        "422": {description: Schema validation failed}
+        "429": {description: Rate limited}
+        "500": {description: ERP server error}
+  /api/v1/orders/by-idempotency-key/{key}:
+    get:
+      operationId: lookupOrderByIdempotencyKey
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 255}
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Order found
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OrderResponse"}
+        "401": {description: Invalid bearer token}
+        "403": {description: Forbidden}
+        "404": {description: Order not found}
+        "429": {description: Rate limited}
+        "500": {description: ERP server error}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 255}
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: true
+      schema: {type: string, format: uuid}
+  schemas:
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - external_reference
+        - sku
+        - quantity
+        - unit_price
+        - currency
+        - requested_delivery_at
+        - approved_by
+      properties:
+        external_reference: {type: string, format: uuid}
+        sku: {type: string, minLength: 1}
+        quantity: {type: integer, minimum: 1}
+        unit_price: {type: string, pattern: "^[0-9]+(?:\\.[0-9]+)?$"}
+        currency: {type: string, const: UAH}
+        requested_delivery_at: {type: string, format: date-time}
+        approved_by: {type: string, minLength: 1}
+    OrderResponse:
+      type: object
+      additionalProperties: false
+      required: [order_id, status, idempotency_key, created_at]
+      properties:
+        order_id: {type: string, minLength: 1}
+        status: {type: string, const: created}
+        idempotency_key: {type: string, minLength: 1}
+        created_at: {type: string, format: date-time}

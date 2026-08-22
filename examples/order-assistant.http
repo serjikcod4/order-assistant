@@ -1,0 +1,85 @@
+@baseUrl = http://127.0.0.1:8000
+@draftId = replace-with-draft-uuid
+@submissionId = replace-with-submission-uuid
+@auditId = replace-with-audit-uuid
+
+### Health
+GET {{baseUrl}}/health/live
+
+### Readiness
+GET {{baseUrl}}/health/ready
+
+### Structured request (safe default; no LLM)
+POST {{baseUrl}}/api/v1/order-requests
+Content-Type: application/json
+
+{
+  "model": "6204",
+  "quantity": 500,
+  "primary_brand": "SKF",
+  "fallback_brands": ["FAG"],
+  "max_unit_price": "250",
+  "delivery_deadline": "2026-08-17T09:00:00",
+  "allow_split_fulfillment": false,
+  "requires_clarification": false,
+  "clarification_questions": []
+}
+
+### Text shadow request (requires explicitly configured local Ollama + shadow)
+POST {{baseUrl}}/api/v1/order-requests/from-text
+Content-Type: application/json
+
+{
+  "text": "Need 500 SKF 6204 bearings, maximum 250 UAH each. FAG is an allowed fallback. Delivery deadline is 2026-08-17 09:00."
+}
+
+### Read draft
+GET {{baseUrl}}/api/v1/drafts/{{draftId}}
+X-Demo-Actor-Id: demo-viewer
+X-Demo-Actor-Role: viewer
+
+### Approve draft
+POST {{baseUrl}}/api/v1/drafts/{{draftId}}/approve
+X-Demo-Actor-Id: demo-manager
+X-Demo-Actor-Role: manager
+
+### Forbidden submit: manager lacks SUBMIT_ORDER permission
+POST {{baseUrl}}/api/v1/drafts/{{draftId}}/submit
+Content-Type: application/json
+X-Demo-Actor-Id: demo-manager
+X-Demo-Actor-Role: manager
+
+{}
+
+### Valid submit: idempotency key and ERP correlation ID are server-owned
+POST {{baseUrl}}/api/v1/drafts/{{draftId}}/submit
+Content-Type: application/json
+X-Demo-Actor-Id: demo-operator
+X-Demo-Actor-Role: operator
+
+{}
+
+### Manual retry for PENDING/UNKNOWN submission
+POST {{baseUrl}}/api/v1/submissions/{{submissionId}}/retry
+X-Demo-Actor-Id: demo-operator
+X-Demo-Actor-Role: operator
+
+### Lookup-only reconciliation; never creates an order
+POST {{baseUrl}}/api/v1/submissions/{{submissionId}}/reconcile
+X-Demo-Actor-Id: demo-operator
+X-Demo-Actor-Role: operator
+
+### Read privacy-aware audit detail
+GET {{baseUrl}}/api/v1/extraction-audits/{{auditId}}
+X-Demo-Actor-Id: demo-admin
+X-Demo-Actor-Role: admin
+
+### Audit summary
+GET {{baseUrl}}/api/v1/extraction-audits/summary
+X-Demo-Actor-Id: demo-admin
+X-Demo-Actor-Role: admin
+
+### Runtime summary
+GET {{baseUrl}}/api/v1/extraction-runtime/summary
+X-Demo-Actor-Id: demo-admin
+X-Demo-Actor-Role: admin
